@@ -1,0 +1,692 @@
+name: Build Aura TV Launcher
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Create Project & Build APK
+        run: |
+          mkdir -p app/src/main/java/com/auratv/launcher app/src/main/res/drawable
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "AuraTV"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+            id("com.android.application") version "8.7.3" apply false
+            id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+            id("com.android.application")
+            id("org.jetbrains.kotlin.android")
+          }
+          android {
+            namespace = "com.auratv.launcher"
+            compileSdk = 35
+            defaultConfig {
+              applicationId = "com.auratv.launcher"
+              minSdk = 23
+              targetSdk = 35
+              versionCode = 1
+              versionName = "1.0"
+            }
+            compileOptions {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+            }
+            kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_tv.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="48dp" android:height="48dp" android:viewportWidth="24" android:viewportHeight="24">
+            <path android:fillColor="#11131A" android:pathData="M0,0h24v24h-24z"/>
+            <path android:fillColor="#FFFFFF" android:pathData="M8,5v14l11,-7z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-feature android:name="android.software.leanback" android:required="false"/>
+            <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+            <queries>
+              <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent>
+              <intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LEANBACK_LAUNCHER"/></intent>
+            </queries>
+            <application android:label="Aura TV" android:icon="@drawable/ic_tv" android:banner="@drawable/ic_tv"
+              android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+              <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+                android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                  <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+                </intent-filter>
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.HOME"/>
+                  <category android:name="android.intent.category.DEFAULT"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/auratv/launcher/MainActivity.kt
+          package com.auratv.launcher
+
+          import android.app.*
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.*
+          import android.graphics.drawable.*
+          import android.net.Uri
+          import android.os.*
+          import android.provider.Settings
+          import android.text.*
+          import android.util.LruCache
+          import android.view.*
+          import android.widget.*
+          import org.json.JSONArray
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.concurrent.Executors
+
+          data class Media(
+            val id: String, val title: String, val sub: String, val desc: String,
+            val src: String, val genre: String, val rating: String, val kind: String,
+            val img: String?, val hex: String, val mature: Boolean = false, val pkg: String? = null
+          )
+          data class AppEntry(val name: String, val pkg: String, val icon: Drawable?, val pin: Boolean, val col: Int)
+
+          class MainActivity : Activity() {
+            private val h = Handler(Looper.getMainLooper())
+            private val exec = Executors.newFixedThreadPool(4)
+            private val cache = object : LruCache<String, Bitmap>(8192) {
+              override fun sizeOf(k: String, v: Bitmap) = v.byteCount / 1024
+            }
+            private val prefs by lazy { getSharedPreferences("aura", MODE_PRIVATE) }
+
+            private val baseMedia = listOf(
+              Media("aashram","Aashram","Trending | A corrupt spiritual guru's world of crime & exploitation","Baba Nirala runs a sprawling ashram hiding crime and politics.","MXPLAYER TV","Crime • Drama","7.4","show",null,"#9B621B",true,"com.mxtech.videoplayer.ad"),
+              Media("rocket","Rocket Boys","Critically Acclaimed | Pioneers of India's space & nuclear journey","Story of Dr. Homi Bhabha and Dr. Vikram Sarabhai.","SONYLIV","Bio • Drama","8.9","show",null,"#245C73",false,"com.sonyliv"),
+              Media("farzi","Farzi","Top Pick | An artist drawn into high-stakes counterfeiting","A small-time artist creates the ultimate counterfeit note.","PRIME VIDEO","Crime • Thriller","8.4","show",null,"#3A4E5C",true,"com.amazon.avod.thirdpartyclient"),
+              Media("scam","Scam 2003","Popular | The Telgi stamp paper empire","Follows Abdul Karim Telgi behind a massive financial scam.","SONYLIV","Crime • Bio","8.0","show",null,"#2D5B4C",false,"com.sonyliv"),
+              Media("samantar","Samantar","Mystery | What if someone already lived your life?","Kumar Mahajan discovers a man whose past mirrors his future.","MXPLAYER TV","Mystery","7.9","show",null,"#333A4F",false,"com.mxtech.videoplayer.ad"),
+              Media("queen","Queen","Drama | A journey of resilience and ambition","Rise of a young school topper reshaping politics.","MXPLAYER TV","Drama","7.8","show",null,"#7A2E3A",false,"com.mxtech.videoplayer.ad"),
+              Media("inter","Interstellar","Sci-Fi Classic | Mankind was born on Earth","Explorers travel through a wormhole to save humanity.","PRIME VIDEO","Sci-Fi","8.7","movie",null,"#1E3A5F",false,"com.amazon.avod.thirdpartyclient"),
+              Media("rrr","RRR","Blockbuster | Fire and Water unite","Two revolutionaries fight British colonial rule in 1920s India.","NETFLIX","Action","7.8","movie",null,"#8C321A",false,"com.netflix.mediaclient"),
+              Media("spider","Across the Spider-Verse","Animation | One hero faces the multiverse","Miles Morales meets Spider-People across dimensions.","NETFLIX","Animation","8.6","movie",null,"#7A1C4B",false,"com.netflix.mediaclient"),
+              Media("fail","12th Fail","Top Rated | An inspiring true story of grit","Based on IPS officer Manoj Kumar Sharma's journey.","HOTSTAR","Bio • Drama","8.8","movie",null,"#3E5B3C",false,"in.startv.hotstar")
+            )
+            private val liveMedia = mutableListOf<Media>()
+
+            private var tab = "For you"
+            private var heroIdx = 0
+            private var lastBack = 0L
+            private lateinit var heroBg: ImageView
+            private lateinit var heroBox: LinearLayout
+            private lateinit var heroSrc: TextView
+            private lateinit var heroTitle: TextView
+            private lateinit var heroSub: TextView
+            private lateinit var heroLib: TextView
+            private lateinit var dotsBox: LinearLayout
+            private lateinit var contentBox: LinearLayout
+            private lateinit var searchBox: LinearLayout
+            private lateinit var remoteBox: LinearLayout
+            private val tabBtns = mutableMapOf<String, TextView>()
+
+            private val heroTick = object : Runnable {
+              override fun run() {
+                if (prefs.getBoolean("rot", true) && tab in listOf("For you","Movies","Shows")) {
+                  val hl = heroItems()
+                  if (hl.size > 1) { heroIdx = (heroIdx + 1) % hl.size; bindHero(hl[heroIdx], hl.size) }
+                }
+                h.postDelayed(this, 7000)
+              }
+            }
+
+            override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              val root = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0B0C10")) }
+              heroBg = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+              root.addView(heroBg, FrameLayout.LayoutParams(-1, -1))
+              root.addView(View(this).apply {
+                background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xE60B0C10.toInt(), 0x660B0C10, 0x000B0C10))
+              }, FrameLayout.LayoutParams(-1, -1))
+              root.addView(View(this).apply {
+                background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xF20B0C10.toInt(), 0x550B0C10, 0x000B0C10))
+              }, FrameLayout.LayoutParams(-1, -1))
+
+              val scroll = ScrollView(this).apply { isFillViewport = true }
+              val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, dp(24)) }
+              scroll.addView(page)
+              root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+
+              // Top Bar
+              val top = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(20), dp(14), dp(20), dp(8))
+              }
+              top.addView(pillBtn("👤", false) { showProfile() }.apply { setPadding(dp(10), dp(6), dp(10), dp(6)) })
+              val tabScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+              val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+              listOf("For you", "Movies", "Shows", "Apps", "Library").forEach { name ->
+                val tv = pillBtn(name, false) { selectTab(name) }
+                tabBtns[name] = tv
+                tabRow.addView(tv, lpWrap(dp(6)))
+              }
+              tabScroll.addView(tabRow)
+              top.addView(tabScroll, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8); marginEnd = dp(8) })
+              top.addView(pillBtn("🔍", false) { openSearch() }, lpWrap(dp(6)))
+              top.addView(pillBtn("⚙", false) { showSettings() }, lpWrap(dp(6)))
+              top.addView(pillBtn("Aura TV", false) { showAbout() })
+              page.addView(top)
+
+              // Hero Section
+              heroBox = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(24), dp(24), dp(12))
+              }
+              heroSrc = TextView(this).apply {
+                setTextColor(Color.WHITE); textSize = 11f; setTypeface(null, Typeface.BOLD)
+                setBackgroundColor(0x88000000.toInt()); setPadding(dp(10), dp(4), dp(10), dp(4))
+              }
+              heroTitle = TextView(this).apply {
+                setTextColor(Color.WHITE); textSize = 32f; setTypeface(null, Typeface.BOLD); maxLines = 2
+              }
+              heroSub = TextView(this).apply {
+                setTextColor(0xFFE8EAED.toInt()); textSize = 13f; maxLines = 2
+                setBackgroundColor(0x66000000); setPadding(dp(10), dp(5), dp(10), dp(5))
+              }
+              val heroActs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+              val btnWatch = pillBtn("▶  Watch", true) { heroItems().getOrNull(heroIdx)?.let { showDetail(it) } }
+              heroLib = pillBtn("+ Library", false) {
+                heroItems().getOrNull(heroIdx)?.let { m ->
+                  val add = toggleLib(m.id)
+                  toast(if (add) "Saved to Library" else "Removed from Library")
+                  heroLib.text = if (add) "✓ Library" else "+ Library"
+                }
+              }
+              val btnPrev = pillBtn("‹", false) { stepHero(-1) }
+              val btnNext = pillBtn("›", false) { stepHero(1) }
+              dotsBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+              heroActs.addView(btnWatch, lpWrap(dp(8)))
+              heroActs.addView(heroLib, lpWrap(dp(8)))
+              heroActs.addView(btnPrev, lpWrap(dp(6)))
+              heroActs.addView(btnNext, lpWrap(dp(12)))
+              heroActs.addView(dotsBox)
+
+              heroBox.addView(heroSrc, lpWrap(0, dp(6)))
+              heroBox.addView(heroTitle, lpWrap(0, dp(6)))
+              heroBox.addView(heroSub, lpWrap(0, dp(10)))
+              heroBox.addView(heroActs)
+              page.addView(heroBox)
+
+              contentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+              page.addView(contentBox)
+
+              // Search Overlay
+              searchBox = buildSearchOverlay()
+              root.addView(searchBox, FrameLayout.LayoutParams(-1, -1))
+
+              // On-Screen Remote Overlay (Mobile test)
+              remoteBox = buildRemoteOverlay()
+              remoteBox.visibility = if (prefs.getBoolean("remote", false)) View.VISIBLE else View.GONE
+              root.addView(remoteBox, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+                setMargins(dp(14), dp(14), dp(14), dp(14))
+              })
+
+              setContentView(root)
+              selectTab("For you")
+              tabBtns["For you"]?.requestFocus()
+              fetchTvMaze()
+            }
+
+            override fun onResume() { super.onResume(); h.removeCallbacks(heroTick); h.postDelayed(heroTick, 7000); renderContent() }
+            override fun onPause() { super.onPause(); h.removeCallbacks(heroTick) }
+
+            private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+            private fun lpWrap(mr: Int = 0, mb: Int = 0) = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = mr; bottomMargin = mb }
+            private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+            private fun pillBg(solid: Int, focusStroke: Int = Color.WHITE) = StateListDrawable().apply {
+              addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat(); setColor(solid); setStroke(dp(2), focusStroke)
+              })
+              addState(intArrayOf(), GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat(); setColor(solid)
+              })
+            }
+
+            private fun pillBtn(label: String, light: Boolean, onClick: () -> Unit) = TextView(this).apply {
+              text = label; textSize = 13f; setTypeface(null, Typeface.BOLD)
+              setTextColor(if (light) 0xFF121212.toInt() else Color.WHITE)
+              background = pillBg(if (light) 0xFFE8EAED.toInt() else 0x2AFFFFFF, if (light) 0xFF82B1FF.toInt() else Color.WHITE)
+              setPadding(dp(14), dp(7), dp(14), dp(7))
+              isFocusable = true; isClickable = true
+              setOnClickListener { onClick() }
+            }
+
+            private fun selectTab(name: String) {
+              tab = name; heroIdx = 0
+              tabBtns.forEach { (k, tv) ->
+                val sel = k == name
+                tv.setTextColor(if (sel) 0xFF121212.toInt() else 0xFFE8EAED.toInt())
+                tv.background = pillBg(if (sel) 0xFFE8EAED.toInt() else 0x22FFFFFF, if (sel) 0xFF82B1FF.toInt() else Color.WHITE)
+              }
+              renderContent()
+            }
+
+            private fun catalog(): List<Media> {
+              val all = (baseMedia + liveMedia).distinctBy { it.id }
+              return if (prefs.getBoolean("kids", false)) all.filter { !it.mature } else all
+            }
+
+            private fun heroItems(): List<Media> = when (tab) {
+              "Movies" -> catalog().filter { it.kind == "movie" }.take(5)
+              "Shows" -> catalog().filter { it.kind == "show" }.take(5)
+              else -> catalog().take(5)
+            }.ifEmpty { baseMedia.take(3) }
+
+            private fun stepHero(d: Int) {
+              val hl = heroItems(); if (hl.isEmpty()) return
+              heroIdx = (heroIdx + d + hl.size) % hl.size
+              bindHero(hl[heroIdx], hl.size)
+            }
+
+            private fun bindHero(m: Media, total: Int) {
+              heroSrc.text = "▶  ${m.src}"
+              heroTitle.text = m.title
+              heroSub.text = m.sub
+              heroLib.text = if (inLib(m.id)) "✓ Library" else "+ Library"
+              loadImg(heroBg, m.img, m.title, m.src, m.hex, true)
+              dotsBox.removeAllViews()
+              for (i in 0 until total) {
+                val sz = dp(if (i == heroIdx) 8 else 6)
+                dotsBox.addView(View(this).apply {
+                  background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL; setColor(if (i == heroIdx) Color.WHITE else 0x66FFFFFF)
+                  }
+                }, LinearLayout.LayoutParams(sz, sz).apply { marginEnd = dp(6) })
+              }
+            }
+
+            private fun renderContent() {
+              contentBox.removeAllViews()
+              val all = catalog()
+              val land = resources.displayMetrics.widthPixels > resources.displayMetrics.heightPixels
+
+              if (tab in listOf("For you", "Movies", "Shows")) {
+                heroBox.visibility = View.VISIBLE
+                val hl = heroItems()
+                if (hl.isNotEmpty()) bindHero(hl[heroIdx.coerceIn(0, hl.lastIndex)], hl.size)
+
+                val row1 = when (tab) {
+                  "Movies" -> "Recommended Movies" to all.filter { it.kind == "movie" }
+                  "Shows" -> "Top Web Series & Shows" to all.filter { it.kind == "show" }
+                  else -> "Top picks for you" to all.drop(1).take(12).ifEmpty { all }
+                }
+                addMediaRow(row1.first, row1.second)
+                addAppsRow("Your apps", loadAppsRow())
+                val row2 = when (tab) {
+                  "Movies" -> "Action & Sci-Fi" to all.filter { it.kind == "movie" }.reversed()
+                  else -> "Live Trending Shows" to (liveMedia.ifEmpty { all.reversed() }).take(14)
+                }
+                addMediaRow(row2.first, row2.second)
+              } else if (tab == "Apps") {
+                heroBox.visibility = View.GONE
+                val apps = loadInstalledApps()
+                addHeader("Installed Apps (Long-press to Pin)")
+                val cols = if (land) 5 else 3
+                val grid = GridLayout(this).apply { columnCount = cols; setPadding(dp(20), 0, dp(20), 0) }
+                val cellW = (resources.displayMetrics.widthPixels - dp(40)) / cols - dp(12)
+                apps.forEach { app ->
+                  val cell = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(10), dp(12), dp(10), dp(12))
+                    background = pillBg(0x22FFFFFF); isFocusable = true; isClickable = true
+                    setOnClickListener { launchApp(app) }
+                    setOnLongClickListener { showAppMenu(app); true }
+                  }
+                  val iv = ImageView(this).apply { app.icon?.let { setImageDrawable(it) } }
+                  val tv = TextView(this).apply {
+                    text = (if (app.pin) "★ " else "") + app.name; setTextColor(Color.WHITE)
+                    textSize = 12f; gravity = Gravity.CENTER; maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                  }
+                  cell.addView(iv, LinearLayout.LayoutParams(dp(46), dp(46)))
+                  cell.addView(tv, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+                  grid.addView(cell, GridLayout.LayoutParams().apply { width = cellW; setMargins(dp(6), dp(6), dp(6), dp(6)) })
+                }
+                contentBox.addView(grid)
+              } else {
+                heroBox.visibility = View.GONE
+                val saved = all.filter { inLib(it.id) }
+                addHeader("Your Library & Watchlist")
+                if (saved.isEmpty()) {
+                  contentBox.addView(TextView(this).apply {
+                    text = "Your Library is empty.\nOpen any movie or show and tap '+ Library'."
+                    setTextColor(0xFFB8BDC8.toInt()); textSize = 15f; gravity = Gravity.CENTER; setPadding(dp(24), dp(40), dp(24), dp(40))
+                  })
+                } else {
+                  addMediaRow("Saved Titles", saved)
+                }
+              }
+            }
+
+            private fun addHeader(title: String) {
+              contentBox.addView(TextView(this).apply {
+                text = title; setTextColor(0xFFE8EAED.toInt()); textSize = 14f; setTypeface(null, Typeface.BOLD)
+                setBackgroundColor(0x55000000); setPadding(dp(10), dp(4), dp(10), dp(4))
+              }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(24); topMargin = dp(12); bottomMargin = dp(8) })
+            }
+
+            private fun addMediaRow(title: String, items: List<Media>) {
+              addHeader(title)
+              val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+              val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(24), dp(4), dp(24), dp(6)) }
+              items.forEach { m -> row.addView(makeMediaCard(m), lpWrap(dp(12))) }
+              hs.addView(row)
+              contentBox.addView(hs)
+            }
+
+            private fun makeMediaCard(m: Media): FrameLayout {
+              val card = FrameLayout(this).apply {
+                layoutParams = ViewGroup.LayoutParams(dp(178), dp(100))
+                isFocusable = true; isClickable = true
+              }
+              val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setBackgroundColor(0xFF1A1D24.toInt()) }
+              loadImg(iv, m.img, m.title, m.src, m.hex, false)
+              card.addView(iv, FrameLayout.LayoutParams(-1, -1))
+              card.addView(View(this).apply {
+                background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xE0000000.toInt(), 0x00000000))
+              }, FrameLayout.LayoutParams(-1, dp(52), Gravity.BOTTOM))
+              val txt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(6)) }
+              txt.addView(TextView(this).apply { text = m.title; setTextColor(Color.WHITE); textSize = 12f; setTypeface(null, Typeface.BOLD); maxLines = 1 })
+              txt.addView(TextView(this).apply { text = "${m.src} • ★ ${m.rating}"; setTextColor(0xFFCCCCCC.toInt()); textSize = 10f; maxLines = 1 })
+              card.addView(txt, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+              val border = View(this).apply {
+                background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setStroke(dp(3), Color.WHITE) }
+                visibility = View.GONE
+              }
+              card.addView(border, FrameLayout.LayoutParams(-1, -1))
+              card.setOnClickListener { showDetail(m) }
+              card.setOnFocusChangeListener { v, f ->
+                border.visibility = if (f) View.VISIBLE else View.GONE
+                v.animate().scaleX(if (f) 1.07f else 1f).scaleY(if (f) 1.07f else 1f).setDuration(130).start()
+              }
+              return card
+            }
+
+            private fun addAppsRow(title: String, apps: List<AppEntry>) {
+              addHeader(title)
+              val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+              val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(24), dp(4), dp(24), dp(6)) }
+              apps.forEach { app -> row.addView(makeAppCircle(app), lpWrap(dp(12))) }
+              hs.addView(row)
+              contentBox.addView(hs)
+            }
+
+            private fun makeAppCircle(app: AppEntry): LinearLayout {
+              val wrap = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; isFocusable = true; isClickable = true
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+              }
+              val ring = FrameLayout(this).apply {
+                background = StateListDrawable().apply {
+                  addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(3), Color.WHITE) })
+                  addState(intArrayOf(), GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT) })
+                }
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+              }
+              val circle = FrameLayout(this).apply {
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(app.col) }
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+              }
+              if (app.icon != null) {
+                circle.addView(ImageView(this).apply { setImageDrawable(app.icon); scaleType = ImageView.ScaleType.FIT_CENTER })
+              } else {
+                circle.addView(TextView(this).apply {
+                  text = app.name.take(6); gravity = Gravity.CENTER; textSize = 10f; setTypeface(null, Typeface.BOLD)
+                  setTextColor(if (Color.luminance(app.col) > 0.6f) 0xFFE50914.toInt() else Color.WHITE)
+                })
+              }
+              ring.addView(circle, FrameLayout.LayoutParams(dp(58), dp(58)))
+              wrap.addView(ring)
+              wrap.addView(TextView(this).apply {
+                text = app.name; setTextColor(Color.WHITE); textSize = 11f; maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER
+              }, LinearLayout.LayoutParams(dp(68), -2).apply { topMargin = dp(4) })
+              wrap.setOnClickListener { launchApp(app) }
+              wrap.setOnLongClickListener { showAppMenu(app); true }
+              wrap.setOnFocusChangeListener { v, f ->
+                v.animate().scaleX(if (f) 1.12f else 1f).scaleY(if (f) 1.12f else 1f).setDuration(130).start()
+              }
+              return wrap
+            }
+            private fun loadInstalledApps(): List<AppEntry> {
+              val pm = packageManager
+              val pins = prefs.getStringSet("pins", emptySet()) ?: emptySet()
+              val seen = HashSet<String>()
+              val out = mutableListOf<AppEntry>()
+              listOf(CATEGORY_LEANBACK(), Intent.ACTION_MAIN to Intent.CATEGORY_LAUNCHER).forEach { (act, cat) ->
+                pm.queryIntentActivities(Intent(act).addCategory(cat), PackageManager.MATCH_ALL).forEach { ri ->
+                  val pkg = ri.activityInfo.packageName ?: return@forEach
+                  if (pkg != packageName && seen.add(pkg)) {
+                    out.add(AppEntry(ri.loadLabel(pm).toString(), pkg, runCatching { ri.loadIcon(pm) }.getOrNull(), pins.contains(pkg), 0xFF23262F.toInt()))
+                  }
+                }
+              }
+              return out.sortedWith(compareByDescending<AppEntry> { it.pin }.thenBy { it.name.lowercase() })
+            }
+            private fun CATEGORY_LEANBACK() = Intent.ACTION_MAIN to Intent.CATEGORY_LEANBACK_LAUNCHER
+
+            private fun loadAppsRow(): List<AppEntry> {
+              val inst = loadInstalledApps()
+              val byPkg = inst.associateBy { it.pkg }
+              val out = inst.filter { it.pin }.toMutableList()
+              val added = out.map { it.pkg }.toHashSet()
+              val known = listOf(
+                Triple("Netflix", "com.netflix.mediaclient", 0xFFFFFFFF.toInt()),
+                Triple("YouTube", "com.google.android.youtube", 0xFFFFFFFF.toInt()),
+                Triple("Prime Video", "com.amazon.avod.thirdpartyclient", 0xFF00A8E1.toInt()),
+                Triple("Hotstar", "in.startv.hotstar", 0xFF0A1A4A.toInt()),
+                Triple("MX Player", "com.mxtech.videoplayer.ad", 0xFF147EFB.toInt()),
+                Triple("ZEE5", "com.graymatrix.did", 0xFF150E24.toInt()),
+                Triple("SonyLIV", "com.sonyliv", 0xFF141414.toInt()),
+                Triple("Spotify", "com.spotify.music", 0xFF1DB954.toInt())
+              )
+              for ((name, pkg, col) in known) {
+                val m = byPkg[pkg]
+                if (m != null && added.add(m.pkg)) out.add(m.copy(col = col))
+                else if (prefs.getBoolean("demo_apps", true) && added.add(pkg)) out.add(AppEntry(name, pkg, null, false, col))
+              }
+              for (a in inst) if (out.size < 14 && added.add(a.pkg)) out.add(a)
+              return out
+            }
+
+            private fun launchApp(app: AppEntry) {
+              val i = packageManager.getLeanbackLaunchIntentForPackage(app.pkg) ?: packageManager.getLaunchIntentForPackage(app.pkg)
+              if (i != null) startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+              else {
+                toast("${app.name} not installed — opening Play Store")
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${app.pkg}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+              }
+            }
+
+            private fun showAppMenu(app: AppEntry) {
+              AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(app.name)
+                .setItems(arrayOf("Open", if (app.pin) "Unpin" else "Pin to Your Apps", "App Info")) { _, w ->
+                  when (w) {
+                    0 -> launchApp(app)
+                    1 -> {
+                      val s = (prefs.getStringSet("pins", emptySet()) ?: emptySet()).toMutableSet()
+                      if (!s.remove(app.pkg)) s.add(app.pkg)
+                      prefs.edit().putStringSet("pins", s).apply(); renderContent()
+                    }
+                    2 -> runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${app.pkg}"))) }
+                  }
+                }.show()
+            }
+
+            private fun inLib(id: String) = (prefs.getStringSet("lib", emptySet()) ?: emptySet()).contains(id)
+            private fun toggleLib(id: String): Boolean {
+              val s = (prefs.getStringSet("lib", emptySet()) ?: emptySet()).toMutableSet()
+              val add = if (s.contains(id)) { s.remove(id); false } else { s.add(id); true }
+              prefs.edit().putStringSet("lib", s).apply(); return add
+            }
+
+            private fun showDetail(m: Media) {
+              AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(m.title)
+                .setMessage("${m.src} • ★ ${m.rating} • ${m.genre}\n\n${m.desc}")
+                .setPositiveButton("▶ Watch / Trailer") { _, _ ->
+                  val i = m.pkg?.let { packageManager.getLeanbackLaunchIntentForPackage(it) ?: packageManager.getLaunchIntentForPackage(it) }
+                  if (i != null) startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                  else startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(m.title + " trailer")}")))
+                }
+                .setNeutralButton(if (inLib(m.id)) "Remove from Library" else "+ Add to Library") { _, _ ->
+                  toggleLib(m.id); renderContent()
+                }
+                .setNegativeButton("Close", null).show()
+            }
+
+            private fun buildSearchOverlay(): LinearLayout {
+              val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setBackgroundColor(0xF20B0C10.toInt())
+                setPadding(dp(24), dp(24), dp(24), dp(24)); visibility = View.GONE
+              }
+              val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+              val edt = EditText(this).apply {
+                hint = "Search movies, shows, apps..."; setHintTextColor(0xFFAAAAAA.toInt())
+                setTextColor(Color.WHITE); setBackgroundColor(0x28FFFFFF); setPadding(dp(14), dp(10), dp(14), dp(10)); isSingleLine = true
+              }
+              val resBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+              fun runSearch(q: String) {
+                resBox.removeAllViews()
+                val s = q.trim().lowercase()
+                val mHits = catalog().filter { s.isEmpty() || it.title.lowercase().contains(s) || it.genre.lowercase().contains(s) }.take(10)
+                val aHits = loadInstalledApps().filter { s.isEmpty() || it.name.lowercase().contains(s) }.take(10)
+                val hs1 = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+                val r1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                mHits.forEach { r1.addView(makeMediaCard(it), lpWrap(dp(10))) }
+                hs1.addView(r1); resBox.addView(hs1, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+                val hs2 = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+                val r2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                aHits.forEach { r2.addView(makeAppCircle(it), lpWrap(dp(10))) }
+                hs2.addView(r2); resBox.addView(hs2, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+              }
+              edt.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { runSearch(s?.toString() ?: "") }
+                override fun afterTextChanged(s: Editable?) {}
+              })
+              bar.addView(edt, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(10) })
+              bar.addView(pillBtn("Close", false) { box.visibility = View.GONE })
+              box.addView(bar)
+              box.addView(resBox)
+              box.tag = Runnable { runSearch(edt.text.toString()); edt.requestFocus() }
+              return box
+            }
+            private fun openSearch() { searchBox.visibility = View.VISIBLE; (searchBox.tag as? Runnable)?.run() 
+            private fun fetchTvMaze() = exec.execute {
+              try {
+                val txt = (URL("https://api.tvmaze.com/shows?page=0").openConnection() as HttpURLConnection).run {
+                  connectTimeout = 5000; readTimeout = 7000; inputStream.bufferedReader().readText()
+                }
+                val arr = JSONArray(txt)
+                val cols = listOf("#1D4B5F", "#5F2D3A", "#38522E", "#4A3A69", "#78491C")
+                val tmp = mutableListOf<Media>()
+                for (i in 0 until minOf(arr.length(), 18)) {
+                  val o = arr.getJSONObject(i)
+                  val name = o.optString("name"); if (name.isBlank()) continue
+                  val gArr = o.optJSONArray("genres")
+                  val gs = (0 until (gArr?.length() ?: 0)).map { gArr!!.optString(it) }
+                  val gStr = if (gs.isEmpty()) "Series" else gs.take(2).joinToString(" • ")
+                  val r = o.optJSONObject("rating")?.optDouble("average", 0.0) ?: 0.0
+                  val img = o.optJSONObject("image")?.optString("medium")?.replace("http://", "https://")
+                  val net = o.optJSONObject("network")?.optString("name") ?: "LIVE TV"
+                  val desc = o.optString("summary", "").replace(Regex("<[^>]*>"), "").ifBlank { "Recommended show." }
+                  tmp.add(Media("tv_${o.optInt("id")}", name, "Recommended | $gStr • $net", desc, net.uppercase(), gStr,
+                    if (r > 0) String.format("%.1f", r) else "7.8", "show", img, cols[i % cols.size], gs.any { it == "Crime" || it == "Horror" }))
+                }
+                if (tmp.isNotEmpty()) { synchronized(liveMedia) { liveMedia.clear(); liveMedia.addAll(tmp) }; h.post { renderContent() } }
+              } catch (_: Exception) {}
+            }
+
+            private fun loadImg(iv: ImageView, url: String?, title: String, src: String, hex: String, hero: Boolean) {
+              val key = url ?: "fb_${title}_$hero"
+              iv.tag = key
+              cache.get(key)?.let { iv.setImageBitmap(it); return }
+              val fb = makeFallback(title, src, hex, hero)
+              iv.setImageBitmap(fb)
+              if (url.isNullOrBlank()) return
+              exec.execute {
+                val bmp = runCatching {
+                  (URL(url).openConnection() as HttpURLConnection).run {
+                    connectTimeout = 5000; readTimeout = 7000; inputStream.use { BitmapFactory.decodeStream(it) }
+                  }
+                }.getOrNull()
+                if (bmp != null) { cache.put(key, bmp); h.post { if (iv.tag == key) iv.setImageBitmap(bmp) } }
+              }
+            }
+
+            private fun makeFallback(title: String, src: String, hex: String, hero: Boolean): Bitmap {
+              val w = if (hero) 720 else 360; val h = if (hero) 405 else 200
+              val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+              val c = Canvas(b)
+              val col = runCatching { Color.parseColor(hex) }.getOrDefault(0xFF5A3921.toInt())
+              c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), Paint().apply {
+                shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(), intArrayOf(0xFF14161D.toInt(), col, 0xFF0B0C10.toInt()), null, Shader.TileMode.CLAMP)
+              })
+              c.drawCircle(w * 0.72f, h * 0.35f, h * 0.4f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FFD180 })
+              if (!hero) {
+                c.drawText(src, 20f, 38f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCCFFFFFF.toInt(); textSize = 18f; isFakeBoldText = true })
+                c.drawText(title.take(18), 20f, h - 28f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 28f; isFakeBoldText = true })
+              }
+              return b
+            }
+
+            override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+              if (keyCode == KeyEvent.KEYCODE_BACK) {
+                if (searchBox.visibility == View.VISIBLE) { searchBox.visibility = View.GONE; return true }
+                if (tab != "For you") { selectTab("For you"); tabBtns["For you"]?.requestFocus(); return true }
+                val home = packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY)
+                if (home?.activityInfo?.packageName == packageName) return true
+                if (System.currentTimeMillis() - lastBack < 1800) finish() else { lastBack = System.currentTimeMillis(); toast("Press Back again to exit") }
+                return true
+              }
+              return super.onKeyDown(keyCode, event)
+            }
+          }
+          EOF
+
+          gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AuraTV-Launcher-APK
+          path: app/build/outputs/apk/debug/*.apk
