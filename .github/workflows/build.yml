@@ -83,6 +83,7 @@ jobs:
             <application android:label="Aura TV" android:icon="@drawable/ic_tv" android:banner="@drawable/ic_tv"
               android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
               <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+                android:screenOrientation="sensorLandscape"
                 android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize">
                 <intent-filter>
                   <action android:name="android.intent.action.MAIN"/>
