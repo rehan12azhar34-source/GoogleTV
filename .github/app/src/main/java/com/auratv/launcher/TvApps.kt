@@ -41,10 +41,13 @@ object TvApps {
         val seen = HashSet<String>()
         val out = mutableListOf<AppEntry>()
         listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER).forEach { cat ->
-            pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(cat), PackageManager.MATCH_ALL).forEach { ri ->
-                val pkg = ri.activityInfo.packageName ?: return@forEach
+            val list = runCatching { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(cat), PackageManager.MATCH_ALL) }.getOrDefault(emptyList())
+            list.forEach { ri ->
+                val pkg = ri.activityInfo?.packageName ?: return@forEach
                 if (pkg != c.packageName && seen.add(pkg)) {
-                    out.add(AppEntry(ri.loadLabel(pm).toString(), pkg, runCatching { ri.loadIcon(pm) }.getOrNull(), pins.contains(pkg), 0xFF23262F.toInt()))
+                    val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkg)
+                    val icon = runCatching { ri.loadIcon(pm) }.getOrNull()
+                    out.add(AppEntry(label, pkg, icon, pins.contains(pkg), 0xFF23262F.toInt()))
                 }
             }
         }
