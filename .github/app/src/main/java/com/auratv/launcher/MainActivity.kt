@@ -45,18 +45,32 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            runCatching {
+                startActivity(Intent(this, CrashActivity::class.java).apply {
+                    putExtra("err", e.stackTraceToString())
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                })
+            }
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
         super.onCreate(savedInstanceState)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         window.setBackgroundDrawable(ColorDrawable(Color.parseColor("#0B0C10")))
         try {
             initUi()
         } catch (e: Throwable) {
-            val tv = TextView(this).apply {
-                text = "Aura TV Error:\n${e.stackTraceToString()}"
-                setTextColor(Color.WHITE); setBackgroundColor(Color.BLACK); setPadding(32, 48, 32, 32)
-            }
-            setContentView(ScrollView(this).apply { addView(tv) })
+            showErr(e)
         }
+    }
+
+    private fun showErr(e: Throwable) {
+        val tv = TextView(this).apply {
+            text = "Aura TV Error:\n${e.stackTraceToString()}"
+            setTextColor(Color.WHITE); setBackgroundColor(Color.BLACK); setPadding(32, 48, 32, 32)
+            setTextIsSelectable(true)
+        }
+        setContentView(ScrollView(this).apply { addView(tv) })
     }
 
     private fun initUi() {
@@ -205,51 +219,55 @@ class MainActivity : Activity() {
     }
 
     private fun renderContent() {
-        val dp = { v: Int -> TvApps.dp(this, v) }
-        contentBox.removeAllViews()
-        val all = currentCatalog()
+        try {
+            val dp = { v: Int -> TvApps.dp(this, v) }
+            contentBox.removeAllViews()
+            val all = currentCatalog()
 
-        when (tab) {
-            "For you", "Movies", "Shows" -> {
-                heroBox.visibility = View.VISIBLE
-                val hl = heroItems()
-                if (hl.isNotEmpty()) bindHero(hl[heroIdx.coerceIn(0, hl.lastIndex)], hl.size)
-                val row1 = when (tab) {
-                    "Movies" -> "Recommended Movies" to all.filter { it.kind == "movie" }
-                    "Shows" -> "Top Web Series & Shows" to all.filter { it.kind == "show" }
-                    else -> "Top picks for you" to all.drop(1).take(12).ifEmpty { all }
+            when (tab) {
+                "For you", "Movies", "Shows" -> {
+                    heroBox.visibility = View.VISIBLE
+                    val hl = heroItems()
+                    if (hl.isNotEmpty()) bindHero(hl[heroIdx.coerceIn(0, hl.lastIndex)], hl.size)
+                    val row1 = when (tab) {
+                        "Movies" -> "Recommended Movies" to all.filter { it.kind == "movie" }
+                        "Shows" -> "Top Web Series & Shows" to all.filter { it.kind == "show" }
+                        else -> "Top picks for you" to all.drop(1).take(12).ifEmpty { all }
+                    }
+                    addMediaRow(row1.first, row1.second)
+                    addAppsRow("Your apps", TvApps.loadRow(this))
+                    val live = TvData.liveSnapshot()
+                    val row2 = if (tab == "Movies") "Action & Sci-Fi" to all.filter { it.kind == "movie" }.reversed()
+                    else "Live Trending Shows" to (live.ifEmpty { all.reversed() }).take(14)
+                    addMediaRow(row2.first, row2.second)
                 }
-                addMediaRow(row1.first, row1.second)
-                addAppsRow("Your apps", TvApps.loadRow(this))
-                val live = TvData.liveSnapshot()
-                val row2 = if (tab == "Movies") "Action & Sci-Fi" to all.filter { it.kind == "movie" }.reversed()
-                else "Live Trending Shows" to (live.ifEmpty { all.reversed() }).take(14)
-                addMediaRow(row2.first, row2.second)
-            }
-            "Apps" -> {
-                heroBox.visibility = View.GONE
-                val apps = TvApps.loadInstalled(this)
-                addHeader("Installed Apps (Long-press to Pin)")
-                val cols = 5
-                val grid = GridLayout(this).apply { columnCount = cols; setPadding(dp(20), 0, dp(20), 0) }
-                val cellW = (resources.displayMetrics.widthPixels - dp(40)) / cols - dp(12)
-                apps.forEach { app ->
-                    val cell = TvCards.makeGridAppCell(this, app, { TvApps.launch(this, it) }, { TvApps.showMenu(this, it) { renderContent() } })
-                    grid.addView(cell, GridLayout.LayoutParams().apply { width = cellW; setMargins(dp(6), dp(6), dp(6), dp(6)) })
+                "Apps" -> {
+                    heroBox.visibility = View.GONE
+                    val apps = TvApps.loadInstalled(this)
+                    addHeader("Installed Apps (Long-press to Pin)")
+                    val cols = 5
+                    val grid = GridLayout(this).apply { columnCount = cols; setPadding(dp(20), 0, dp(20), 0) }
+                    val cellW = (resources.displayMetrics.widthPixels - dp(40)) / cols - dp(12)
+                    apps.forEach { app ->
+                        val cell = TvCards.makeGridAppCell(this, app, { TvApps.launch(this, it) }, { TvApps.showMenu(this, it) { renderContent() } })
+                        grid.addView(cell, GridLayout.LayoutParams().apply { width = cellW; setMargins(dp(6), dp(6), dp(6), dp(6)) })
+                    }
+                    contentBox.addView(grid)
                 }
-                contentBox.addView(grid)
+                else -> {
+                    heroBox.visibility = View.GONE
+                    val saved = all.filter { TvOverlays.inLib(this, it.id) }
+                    addHeader("Your Library & Watchlist")
+                    if (saved.isEmpty()) {
+                        contentBox.addView(TextView(this).apply {
+                            text = "Your Library is empty.\nOpen any movie or show and tap '+ Library'."
+                            setTextColor(0xFFB8BDC8.toInt()); textSize = 15f; gravity = Gravity.CENTER; setPadding(dp(24), dp(40), dp(24), dp(40))
+                        })
+                    } else addMediaRow("Saved Titles", saved)
+                }
             }
-            else -> {
-                heroBox.visibility = View.GONE
-                val saved = all.filter { TvOverlays.inLib(this, it.id) }
-                addHeader("Your Library & Watchlist")
-                if (saved.isEmpty()) {
-                    contentBox.addView(TextView(this).apply {
-                        text = "Your Library is empty.\nOpen any movie or show and tap '+ Library'."
-                        setTextColor(0xFFB8BDC8.toInt()); textSize = 15f; gravity = Gravity.CENTER; setPadding(dp(24), dp(40), dp(24), dp(40))
-                    })
-                } else addMediaRow("Saved Titles", saved)
-            }
+        } catch (e: Throwable) {
+            showErr(e)
         }
     }
 
@@ -295,5 +313,19 @@ class MainActivity : Activity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+}
+
+class CrashActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val msg = intent.getStringExtra("err") ?: "Unknown crash"
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(TextView(this@CrashActivity).apply {
+                text = msg; setTextColor(Color.WHITE); textSize = 13f; setPadding(32, 48, 32, 32)
+                setTextIsSelectable(true)
+            })
+        })
     }
 }
