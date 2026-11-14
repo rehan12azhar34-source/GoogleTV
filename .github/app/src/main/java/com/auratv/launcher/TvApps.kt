@@ -9,11 +9,18 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.widget.TextView
 import android.widget.Toast
+import java.util.concurrent.Executors
 
 object TvApps {
+    private val exec = Executors.newSingleThreadExecutor()
+    private val mainH = Handler(Looper.getMainLooper())
+    @Volatile private var cachedApps: List<AppEntry>? = null
+
     fun dp(c: Context, v: Int) = (v * c.resources.displayMetrics.density).toInt()
 
     fun pillBg(c: Context, solid: Int, focusStroke: Int = Color.WHITE) = StateListDrawable().apply {
@@ -34,24 +41,30 @@ object TvApps {
         setOnClickListener { onClick() }
     }
 
-    fun loadInstalled(c: Context): List<AppEntry> {
-        val pm = c.packageManager
-        val prefs = c.getSharedPreferences("aura", Context.MODE_PRIVATE)
-        val pins = prefs.getStringSet("pins", emptySet()) ?: emptySet()
-        val seen = HashSet<String>()
-        val out = mutableListOf<AppEntry>()
-        listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER).forEach { cat ->
-            val list = runCatching { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(cat), PackageManager.MATCH_ALL) }.getOrDefault(emptyList())
-            list.forEach { ri ->
-                val pkg = ri.activityInfo?.packageName ?: return@forEach
-                if (pkg != c.packageName && seen.add(pkg)) {
-                    val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkg)
-                    val icon = runCatching { ri.loadIcon(pm) }.getOrNull()
-                    out.add(AppEntry(label, pkg, icon, pins.contains(pkg), 0xFF23262F.toInt()))
+    fun loadInstalled(c: Context): List<AppEntry> = cachedApps ?: emptyList()
+
+    fun prefetchApps(c: Context, onReady: () -> Unit) {
+        val appCtx = c.applicationContext
+        exec.execute {
+            val pm = appCtx.packageManager
+            val prefs = appCtx.getSharedPreferences("aura", Context.MODE_PRIVATE)
+            val pins = prefs.getStringSet("pins", emptySet()) ?: emptySet()
+            val seen = HashSet<String>()
+            val out = mutableListOf<AppEntry>()
+            listOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER).forEach { cat ->
+                val list = runCatching { pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(cat), PackageManager.MATCH_ALL) }.getOrDefault(emptyList())
+                list.forEach { ri ->
+                    val pkg = ri.activityInfo?.packageName ?: return@forEach
+                    if (pkg != appCtx.packageName && seen.add(pkg)) {
+                        val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkg)
+                        val icon = runCatching { ri.loadIcon(pm) }.getOrNull()
+                        out.add(AppEntry(label, pkg, icon, pins.contains(pkg), 0xFF23262F.toInt()))
+                    }
                 }
             }
+            cachedApps = out.sortedWith(compareByDescending<AppEntry> { it.pin }.thenBy { it.name.lowercase() })
+            mainH.post { onReady() }
         }
-        return out.sortedWith(compareByDescending<AppEntry> { it.pin }.thenBy { it.name.lowercase() })
     }
 
     fun loadRow(c: Context): List<AppEntry> {
@@ -99,7 +112,7 @@ object TvApps {
                         val s = (prefs.getStringSet("pins", emptySet()) ?: emptySet()).toMutableSet()
                         if (!s.remove(app.pkg)) s.add(app.pkg)
                         prefs.edit().putStringSet("pins", s).apply()
-                        onRefresh()
+                        prefetchApps(c, onRefresh)
                     }
                     2 -> runCatching {
                         c.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${app.pkg}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
