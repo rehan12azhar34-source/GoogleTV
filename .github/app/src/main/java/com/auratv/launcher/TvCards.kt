@@ -64,9 +64,10 @@ object TvCards {
         if (app.icon != null) {
             circle.addView(ImageView(c).apply { setImageDrawable(app.icon); scaleType = ImageView.ScaleType.FIT_CENTER })
         } else {
+            val luma = (Color.red(app.col) * 299 + Color.green(app.col) * 587 + Color.blue(app.col) * 114) / 1000
             circle.addView(TextView(c).apply {
                 text = app.name.take(6); gravity = Gravity.CENTER; textSize = 10f; setTypeface(null, Typeface.BOLD)
-                setTextColor(if (Color.luminance(app.col) > 0.6f) 0xFFE50914.toInt() else Color.WHITE)
+                setTextColor(if (luma > 160) 0xFFE50914.toInt() else Color.WHITE)
             })
         }
         ring.addView(circle, FrameLayout.LayoutParams(dp(58), dp(58)))
