@@ -2,9 +2,11 @@ package com.auratv.launcher
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
@@ -44,6 +46,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        window.setBackgroundDrawable(ColorDrawable(Color.parseColor("#0B0C10")))
         try {
             initUi()
         } catch (e: Throwable) {
@@ -90,19 +94,19 @@ class MainActivity : Activity() {
         top.addView(TvApps.pillBtn(this, "⚙", false) {
             TvOverlays.showSettings(this, remoteBox.visibility == View.VISIBLE) { remOn ->
                 remoteBox.visibility = if (remOn) View.VISIBLE else View.GONE
-                TvData.fetchTvMaze { renderContent() }
+                TvData.fetchTvMaze { if (!isFinishing) renderContent() }
                 renderContent()
             }
         }, lpWrap(dp(6)))
         top.addView(TvApps.pillBtn(this, "Aura TV", false) { TvOverlays.showAbout(this) })
         page.addView(top)
 
-        heroBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(24), dp(24), dp(12)) }
+        heroBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(18), dp(24), dp(10)) }
         heroSrc = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 11f; setTypeface(null, Typeface.BOLD)
             setBackgroundColor(0x88000000.toInt()); setPadding(dp(10), dp(4), dp(10), dp(4))
         }
-        heroTitle = TextView(this).apply { setTextColor(Color.WHITE); textSize = 32f; setTypeface(null, Typeface.BOLD); maxLines = 2 }
+        heroTitle = TextView(this).apply { setTextColor(Color.WHITE); textSize = 30f; setTypeface(null, Typeface.BOLD); maxLines = 2 }
         heroSub = TextView(this).apply {
             setTextColor(0xFFE8EAED.toInt()); textSize = 13f; maxLines = 2
             setBackgroundColor(0x66000000); setPadding(dp(10), dp(5), dp(10), dp(5))
@@ -147,10 +151,16 @@ class MainActivity : Activity() {
         setContentView(root)
         selectTab("For you")
         tabBtns["For you"]?.requestFocus()
-        TvData.fetchTvMaze { renderContent() }
+        TvApps.prefetchApps(this) { if (!isFinishing) renderContent() }
+        TvData.fetchTvMaze { if (!isFinishing) renderContent() }
     }
 
-    override fun onResume() { super.onResume(); h.removeCallbacks(heroTick); h.postDelayed(heroTick, 7000); if (::contentBox.isInitialized) renderContent() }
+    override fun onResume() {
+        super.onResume()
+        h.removeCallbacks(heroTick)
+        h.postDelayed(heroTick, 7000)
+        TvApps.prefetchApps(this) { if (!isFinishing && ::contentBox.isInitialized) renderContent() }
+    }
     override fun onPause() { super.onPause(); h.removeCallbacks(heroTick) }
 
     private fun lpWrap(mr: Int = 0, mb: Int = 0) = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = mr; bottomMargin = mb }
@@ -198,7 +208,6 @@ class MainActivity : Activity() {
         val dp = { v: Int -> TvApps.dp(this, v) }
         contentBox.removeAllViews()
         val all = currentCatalog()
-        val land = resources.displayMetrics.widthPixels > resources.displayMetrics.heightPixels
 
         when (tab) {
             "For you", "Movies", "Shows" -> {
@@ -221,7 +230,7 @@ class MainActivity : Activity() {
                 heroBox.visibility = View.GONE
                 val apps = TvApps.loadInstalled(this)
                 addHeader("Installed Apps (Long-press to Pin)")
-                val cols = if (land) 5 else 3
+                val cols = 5
                 val grid = GridLayout(this).apply { columnCount = cols; setPadding(dp(20), 0, dp(20), 0) }
                 val cellW = (resources.displayMetrics.widthPixels - dp(40)) / cols - dp(12)
                 apps.forEach { app ->
