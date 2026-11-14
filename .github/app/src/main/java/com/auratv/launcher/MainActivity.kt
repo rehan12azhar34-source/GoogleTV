@@ -1,331 +1,245 @@
 package com.auratv.launcher
 
-import android.app.Activity
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.*
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.KeyEvent
+import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 
-class MainActivity : Activity() {
-    private val h = Handler(Looper.getMainLooper())
+class MainActivity : AppCompatActivity() {
+    private lateinit var mediaRepo: MediaRepository
+    private lateinit var appRepo: AppRepository
     private val prefs by lazy { getSharedPreferences("aura", MODE_PRIVATE) }
+    private val h = Handler(Looper.getMainLooper())
 
-    private var tab = "For you"
+    private var currentTab = TabType.FOR_YOU
+    private var heroList = emptyList<MediaItem>()
     private var heroIdx = 0
     private var lastBack = 0L
 
     private lateinit var heroBg: ImageView
-    private lateinit var heroBox: LinearLayout
+    private lateinit var heroContainer: View
     private lateinit var heroSrc: TextView
     private lateinit var heroTitle: TextView
     private lateinit var heroSub: TextView
-    private lateinit var heroLib: TextView
-    private lateinit var dotsBox: LinearLayout
-    private lateinit var contentBox: LinearLayout
-    private lateinit var searchBox: LinearLayout
-    private lateinit var remoteBox: LinearLayout
-    private val tabBtns = mutableMapOf<String, TextView>()
+    private lateinit var btnBookmark: TextView
+    private lateinit var dotsLayout: LinearLayout
+    private lateinit var homeSections: View
+    private lateinit var gridContainer: View
+    private lateinit var txtRow1: TextView
+    private lateinit var txtRow2: TextView
+    private lateinit var txtGridTitle: TextView
+    private lateinit var txtEmpty: TextView
+    private lateinit var rvGrid: RecyclerView
+    private lateinit var searchOverlay: View
+    private lateinit var remoteOverlay: View
+    private lateinit var tabs: List<Pair<TabType, TextView>>
+
+    private lateinit var row1Ad: MediaCardAdapter
+    private lateinit var row2Ad: MediaCardAdapter
+    private lateinit var appsAd: AppCircleAdapter
+    private lateinit var gridAppsAd: AppGridAdapter
+    private lateinit var gridMediaAd: MediaCardAdapter
+    private lateinit var sMediaAd: MediaCardAdapter
+    private lateinit var sAppsAd: AppCircleAdapter
 
     private val heroTick = object : Runnable {
         override fun run() {
-            if (prefs.getBoolean("rot", true) && tab in listOf("For you", "Movies", "Shows")) {
-                val hl = heroItems()
-                if (hl.size > 1) { heroIdx = (heroIdx + 1) % hl.size; bindHero(hl[heroIdx], hl.size) }
+            if (prefs.getBoolean("rot", true) && heroList.size > 1 && currentTab in listOf(TabType.FOR_YOU, TabType.MOVIES, TabType.SHOWS)) {
+                heroIdx = (heroIdx + 1) % heroList.size
+                bindHero(heroList[heroIdx])
             }
             h.postDelayed(this, 7000)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        Thread.setDefaultUncaughtExceptionHandler { _, e ->
-            runCatching {
-                startActivity(Intent(this, CrashActivity::class.java).apply {
-                    putExtra("err", e.stackTraceToString())
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                })
-            }
-            android.os.Process.killProcess(android.os.Process.myPid())
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            prefs.edit().putString("last_crash", e.stackTraceToString().take(3000)).commit()
+            prev?.uncaughtException(t, e)
         }
         super.onCreate(savedInstanceState)
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        window.setBackgroundDrawable(ColorDrawable(Color.parseColor("#0B0C10")))
-        try {
-            initUi()
-        } catch (e: Throwable) {
-            showErr(e)
-        }
-    }
+        setContentView(R.layout.activity_main)
 
-    private fun showErr(e: Throwable) {
-        val tv = TextView(this).apply {
-            text = "Aura TV Error:\n${e.stackTraceToString()}"
-            setTextColor(Color.WHITE); setBackgroundColor(Color.BLACK); setPadding(32, 48, 32, 32)
-            setTextIsSelectable(true)
+        prefs.getString("last_crash", null)?.let { err ->
+            prefs.edit().remove("last_crash").apply()
+            AlertDialog.Builder(this).setTitle("Previous Crash Log").setMessage(err).setPositiveButton("OK", null).show()
         }
-        setContentView(ScrollView(this).apply { addView(tv) })
-    }
 
-    private fun initUi() {
-        val dp = { v: Int -> TvApps.dp(this, v) }
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0B0C10")) }
-        heroBg = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-        root.addView(heroBg, FrameLayout.LayoutParams(-1, -1))
-        root.addView(View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xE60B0C10.toInt(), 0x660B0C10, 0x000B0C10))
-        }, FrameLayout.LayoutParams(-1, -1))
-        root.addView(View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xF20B0C10.toInt(), 0x550B0C10, 0x000B0C10))
-        }, FrameLayout.LayoutParams(-1, -1))
+        mediaRepo = MediaRepository(this)
+        appRepo = AppRepository(this)
 
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, dp(24)) }
-        scroll.addView(page)
-        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        heroBg = findViewById(R.id.heroBackdrop)
+        heroContainer = findViewById(R.id.heroContainer)
+        heroSrc = findViewById(R.id.heroSourceBadge)
+        heroTitle = findViewById(R.id.heroTitle)
+        heroSub = findViewById(R.id.heroSubtitle)
+        btnBookmark = findViewById(R.id.btnHeroBookmark)
+        dotsLayout = findViewById(R.id.heroDotsLayout)
+        homeSections = findViewById(R.id.homeSectionsContainer)
+        gridContainer = findViewById(R.id.appsGridContainer)
+        txtRow1 = findViewById(R.id.txtRow1Title)
+        txtRow2 = findViewById(R.id.txtRow2Title)
+        txtGridTitle = findViewById(R.id.txtGridTitle)
+        txtEmpty = findViewById(R.id.txtEmptyState)
+        rvGrid = findViewById(R.id.rvGrid)
+        searchOverlay = findViewById(R.id.searchOverlay)
+        remoteOverlay = findViewById(R.id.remoteOverlay)
+        remoteOverlay.visibility = if (prefs.getBoolean("remote", false)) View.VISIBLE else View.GONE
 
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(14), dp(20), dp(8))
-        }
-        top.addView(TvApps.pillBtn(this, "👤", false) { TvOverlays.showProfile(this) { renderContent() } })
-        val tabScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("For you", "Movies", "Shows", "Apps", "Library").forEach { name ->
-            val tv = TvApps.pillBtn(this, name, false) { selectTab(name) }
-            tabBtns[name] = tv
-            tabRow.addView(tv, lpWrap(dp(6)))
-        }
-        tabScroll.addView(tabRow)
-        top.addView(tabScroll, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8); marginEnd = dp(8) })
-        top.addView(TvApps.pillBtn(this, "🔍", false) { searchBox.visibility = View.VISIBLE; (searchBox.tag as? Runnable)?.run() }, lpWrap(dp(6)))
-        top.addView(TvApps.pillBtn(this, "⚙", false) {
-            TvOverlays.showSettings(this, remoteBox.visibility == View.VISIBLE) { remOn ->
-                remoteBox.visibility = if (remOn) View.VISIBLE else View.GONE
-                TvData.fetchTvMaze { if (!isFinishing) renderContent() }
-                renderContent()
+        tabs = listOf(
+            TabType.FOR_YOU to findViewById(R.id.tabForYou),
+            TabType.MOVIES to findViewById(R.id.tabMovies),
+            TabType.SHOWS to findViewById(R.id.tabShows),
+            TabType.APPS to findViewById(R.id.tabApps),
+            TabType.LIBRARY to findViewById(R.id.tabLibrary)
+        )
+        tabs.forEach { (type, v) -> v.setOnClickListener { selectTab(type) } }
+
+        row1Ad = MediaCardAdapter(emptyList()) { LauncherDialogs.showMediaDetail(this, it, mediaRepo) { refreshUi() } }
+        row2Ad = MediaCardAdapter(emptyList()) { LauncherDialogs.showMediaDetail(this, it, mediaRepo) { refreshUi() } }
+        appsAd = AppCircleAdapter(emptyList(), { appRepo.launch(it) }, { LauncherDialogs.showAppMenu(this, it, appRepo) { refreshUi() } })
+        gridAppsAd = AppGridAdapter(emptyList(), { appRepo.launch(it) }, { LauncherDialogs.showAppMenu(this, it, appRepo) { refreshUi() } })
+        gridMediaAd = MediaCardAdapter(emptyList()) { LauncherDialogs.showMediaDetail(this, it, mediaRepo) { refreshUi() } }
+        sMediaAd = MediaCardAdapter(emptyList()) { LauncherDialogs.showMediaDetail(this, it, mediaRepo) { refreshUi() } }
+        sAppsAd = AppCircleAdapter(emptyList(), { appRepo.launch(it) }, { LauncherDialogs.showAppMenu(this, it, appRepo) { refreshUi() } })
+
+        findViewById<RecyclerView>(R.id.rvRow1).apply { layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false); adapter = row1Ad }
+        findViewById<RecyclerView>(R.id.rvAppsRow).apply { layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false); adapter = appsAd }
+        findViewById<RecyclerView>(R.id.rvRow2).apply { layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false); adapter = row2Ad }
+        findViewById<RecyclerView>(R.id.rvSearchMedia).apply { layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false); adapter = sMediaAd }
+        findViewById<RecyclerView>(R.id.rvSearchApps).apply { layoutManager = LinearLayoutManager(context, RecyclerView.HORIZONTAL, false); adapter = sAppsAd }
+
+        findViewById<View>(R.id.btnProfile).setOnClickListener { LauncherDialogs.showProfile(this, mediaRepo) { refreshUi() } }
+        findViewById<View>(R.id.txtBrand).setOnClickListener { LauncherDialogs.showAbout(this) }
+        findViewById<View>(R.id.btnSettings).setOnClickListener {
+            LauncherDialogs.showSettings(this, appRepo, remoteOverlay.visibility == View.VISIBLE, prefs.getBoolean("rot", true)) { rem, rot ->
+                remoteOverlay.visibility = if (rem) View.VISIBLE else View.GONE
+                prefs.edit().putBoolean("remote", rem).putBoolean("rot", rot).apply()
+                mediaRepo.fetchLive { runOnUiThread { if (!isFinishing) refreshUi() } }
+                refreshUi()
             }
-        }, lpWrap(dp(6)))
-        top.addView(TvApps.pillBtn(this, "Aura TV", false) { TvOverlays.showAbout(this) })
-        page.addView(top)
-
-        heroBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(18), dp(24), dp(10)) }
-        heroSrc = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 11f; setTypeface(null, Typeface.BOLD)
-            setBackgroundColor(0x88000000.toInt()); setPadding(dp(10), dp(4), dp(10), dp(4))
         }
-        heroTitle = TextView(this).apply { setTextColor(Color.WHITE); textSize = 30f; setTypeface(null, Typeface.BOLD); maxLines = 2 }
-        heroSub = TextView(this).apply {
-            setTextColor(0xFFE8EAED.toInt()); textSize = 13f; maxLines = 2
-            setBackgroundColor(0x66000000); setPadding(dp(10), dp(5), dp(10), dp(5))
-        }
-        val heroActs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val btnWatch = TvApps.pillBtn(this, "▶  Watch", true) { heroItems().getOrNull(heroIdx)?.let { TvOverlays.showDetail(this, it) { renderContent() } } }
-        heroLib = TvApps.pillBtn(this, "+ Library", false) {
-            heroItems().getOrNull(heroIdx)?.let { m ->
-                val add = TvOverlays.toggleLib(this, m.id)
+        findViewById<View>(R.id.btnHeroWatch).setOnClickListener { heroList.getOrNull(heroIdx)?.let { LauncherDialogs.showMediaDetail(this, it, mediaRepo) { refreshUi() } } }
+        btnBookmark.setOnClickListener {
+            heroList.getOrNull(heroIdx)?.let {
+                val add = mediaRepo.toggleLibrary(it.id)
+                btnBookmark.text = if (add) "✓ Library" else "+ Library"
                 Toast.makeText(this, if (add) "Saved to Library" else "Removed from Library", Toast.LENGTH_SHORT).show()
-                heroLib.text = if (add) "✓ Library" else "+ Library"
             }
         }
-        dotsBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        heroActs.addView(btnWatch, lpWrap(dp(8)))
-        heroActs.addView(heroLib, lpWrap(dp(8)))
-        heroActs.addView(TvApps.pillBtn(this, "‹", false) { stepHero(-1) }, lpWrap(dp(6)))
-        heroActs.addView(TvApps.pillBtn(this, "›", false) { stepHero(1) }, lpWrap(dp(12)))
-        heroActs.addView(dotsBox)
+        findViewById<View>(R.id.btnHeroPrev).setOnClickListener { if (heroList.isNotEmpty()) { heroIdx = (heroIdx - 1 + heroList.size) % heroList.size; bindHero(heroList[heroIdx]) } }
+        findViewById<View>(R.id.btnHeroNext).setOnClickListener { if (heroList.isNotEmpty()) { heroIdx = (heroIdx + 1) % heroList.size; bindHero(heroList[heroIdx]) } }
 
-        heroBox.addView(heroSrc, lpWrap(0, dp(6)))
-        heroBox.addView(heroTitle, lpWrap(0, dp(6)))
-        heroBox.addView(heroSub, lpWrap(0, dp(10)))
-        heroBox.addView(heroActs)
-        page.addView(heroBox)
+        setupSearchAndRemote()
+        selectTab(TabType.FOR_YOU)
+        tabs.first().second.requestFocus()
 
-        contentBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        page.addView(contentBox)
+        appRepo.prefetch { if (!isFinishing) refreshUi() }
+        mediaRepo.fetchLive { runOnUiThread { if (!isFinishing) refreshUi() } }
+    }
 
-        searchBox = TvOverlays.buildSearch(this, { currentCatalog() }, { m -> TvOverlays.showDetail(this, m) { renderContent() } }, { renderContent() })
-        root.addView(searchBox, FrameLayout.LayoutParams(-1, -1))
-
-        remoteBox = TvOverlays.buildRemote(this, { tabBtns["For you"] }) {
-            remoteBox.visibility = View.GONE
-            prefs.edit().putBoolean("remote", false).apply()
+    private fun setupSearchAndRemote() {
+        val edt = findViewById<EditText>(R.id.edtSearch)
+        fun runS(q: String) {
+            sMediaAd.submitList(mediaRepo.search(q))
+            val s = q.trim().lowercase()
+            sAppsAd.submitList(appRepo.getAllInstalled().filter { s.isEmpty() || it.label.lowercase().contains(s) }.take(10))
         }
-        remoteBox.visibility = if (prefs.getBoolean("remote", false)) View.VISIBLE else View.GONE
-        root.addView(remoteBox, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
-            setMargins(dp(14), dp(14), dp(14), dp(14))
+        findViewById<View>(R.id.btnSearch).setOnClickListener { searchOverlay.visibility = View.VISIBLE; runS(edt.text.toString()); edt.requestFocus() }
+        findViewById<View>(R.id.btnCloseSearch).setOnClickListener { searchOverlay.visibility = View.GONE }
+        edt.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { runS(s?.toString() ?: "") }
+            override fun afterTextChanged(s: Editable?) {}
         })
-
-        setContentView(root)
-        selectTab("For you")
-        tabBtns["For you"]?.requestFocus()
-        TvApps.prefetchApps(this) { if (!isFinishing) renderContent() }
-        TvData.fetchTvMaze { if (!isFinishing) renderContent() }
+        fun send(k: Int) { if (currentFocus == null) tabs.first().second.requestFocus(); dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, k)); dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, k)) }
+        findViewById<View>(R.id.remUp).setOnClickListener { send(KeyEvent.KEYCODE_DPAD_UP) }
+        findViewById<View>(R.id.remDown).setOnClickListener { send(KeyEvent.KEYCODE_DPAD_DOWN) }
+        findViewById<View>(R.id.remLeft).setOnClickListener { send(KeyEvent.KEYCODE_DPAD_LEFT) }
+        findViewById<View>(R.id.remRight).setOnClickListener { send(KeyEvent.KEYCODE_DPAD_RIGHT) }
+        findViewById<View>(R.id.remOk).setOnClickListener { send(KeyEvent.KEYCODE_DPAD_CENTER) }
+        findViewById<View>(R.id.remBack).setOnClickListener { send(KeyEvent.KEYCODE_BACK) }
+        findViewById<View>(R.id.remClose).setOnClickListener { remoteOverlay.visibility = View.GONE; prefs.edit().putBoolean("remote", false).apply() }
     }
 
-    override fun onResume() {
-        super.onResume()
-        h.removeCallbacks(heroTick)
-        h.postDelayed(heroTick, 7000)
-        TvApps.prefetchApps(this) { if (!isFinishing && ::contentBox.isInitialized) renderContent() }
-    }
+    override fun onResume() { super.onResume(); h.removeCallbacks(heroTick); h.postDelayed(heroTick, 7000); appRepo.prefetch { if (!isFinishing) refreshUi() } }
     override fun onPause() { super.onPause(); h.removeCallbacks(heroTick) }
 
-    private fun lpWrap(mr: Int = 0, mb: Int = 0) = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = mr; bottomMargin = mb }
-    private fun currentCatalog() = TvData.catalog(prefs.getBoolean("kids", false))
-
-    private fun selectTab(name: String) {
-        tab = name; heroIdx = 0
-        tabBtns.forEach { (k, tv) ->
-            val sel = k == name
-            tv.setTextColor(if (sel) 0xFF121212.toInt() else 0xFFE8EAED.toInt())
-            tv.background = TvApps.pillBg(this, if (sel) 0xFFE8EAED.toInt() else 0x22FFFFFF, if (sel) 0xFF82B1FF.toInt() else Color.WHITE)
-        }
-        renderContent()
+    private fun selectTab(tab: TabType) {
+        currentTab = tab; heroIdx = 0
+        tabs.forEach { (t, v) -> v.isSelected = t == tab; v.setTextColor(if (t == tab) 0xFF121212.toInt() else 0xFFE8EAED.toInt()) }
+        refreshUi()
     }
 
-    private fun heroItems(): List<Media> = when (tab) {
-        "Movies" -> currentCatalog().filter { it.kind == "movie" }.take(5)
-        "Shows" -> currentCatalog().filter { it.kind == "show" }.take(5)
-        else -> currentCatalog().take(5)
-    }.ifEmpty { TvData.baseMedia.take(3) }
-
-    private fun stepHero(d: Int) {
-        val hl = heroItems(); if (hl.isEmpty()) return
-        heroIdx = (heroIdx + d + hl.size) % hl.size
-        bindHero(hl[heroIdx], hl.size)
-    }
-
-    private fun bindHero(m: Media, total: Int) {
-        val dp = { v: Int -> TvApps.dp(this, v) }
-        heroSrc.text = "▶  ${m.src}"
+    private fun bindHero(m: MediaItem) {
+        heroSrc.text = "▶  ${m.sourceName}"
         heroTitle.text = m.title
-        heroSub.text = m.sub
-        heroLib.text = if (TvOverlays.inLib(this, m.id)) "✓ Library" else "+ Library"
-        TvData.loadImg(heroBg, m.img, m.title, m.src, m.hex, true)
-        dotsBox.removeAllViews()
-        for (i in 0 until total) {
-            val sz = dp(if (i == heroIdx) 8 else 6)
-            dotsBox.addView(View(this).apply {
+        heroSub.text = m.subtitle
+        btnBookmark.text = if (mediaRepo.isInLibrary(m.id)) "✓ Library" else "+ Library"
+        ImageLoader.load(heroBg, m.imageUrl, m.title, m.sourceName, m.accentHex, true)
+        dotsLayout.removeAllViews()
+        for (i in heroList.indices) {
+            val sz = if (i == heroIdx) 14 else 10
+            dotsLayout.addView(View(this).apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (i == heroIdx) Color.WHITE else 0x66FFFFFF) }
-            }, LinearLayout.LayoutParams(sz, sz).apply { marginEnd = dp(6) })
+            }, LinearLayout.LayoutParams(sz, sz).apply { marginEnd = 8 })
         }
     }
 
-    private fun renderContent() {
-        try {
-            val dp = { v: Int -> TvApps.dp(this, v) }
-            contentBox.removeAllViews()
-            val all = currentCatalog()
-
-            when (tab) {
-                "For you", "Movies", "Shows" -> {
-                    heroBox.visibility = View.VISIBLE
-                    val hl = heroItems()
-                    if (hl.isNotEmpty()) bindHero(hl[heroIdx.coerceIn(0, hl.lastIndex)], hl.size)
-                    val row1 = when (tab) {
-                        "Movies" -> "Recommended Movies" to all.filter { it.kind == "movie" }
-                        "Shows" -> "Top Web Series & Shows" to all.filter { it.kind == "show" }
-                        else -> "Top picks for you" to all.drop(1).take(12).ifEmpty { all }
-                    }
-                    addMediaRow(row1.first, row1.second)
-                    addAppsRow("Your apps", TvApps.loadRow(this))
-                    val live = TvData.liveSnapshot()
-                    val row2 = if (tab == "Movies") "Action & Sci-Fi" to all.filter { it.kind == "movie" }.reversed()
-                    else "Live Trending Shows" to (live.ifEmpty { all.reversed() }).take(14)
-                    addMediaRow(row2.first, row2.second)
-                }
-                "Apps" -> {
-                    heroBox.visibility = View.GONE
-                    val apps = TvApps.loadInstalled(this)
-                    addHeader("Installed Apps (Long-press to Pin)")
-                    val cols = 5
-                    val grid = GridLayout(this).apply { columnCount = cols; setPadding(dp(20), 0, dp(20), 0) }
-                    val cellW = (resources.displayMetrics.widthPixels - dp(40)) / cols - dp(12)
-                    apps.forEach { app ->
-                        val cell = TvCards.makeGridAppCell(this, app, { TvApps.launch(this, it) }, { TvApps.showMenu(this, it) { renderContent() } })
-                        grid.addView(cell, GridLayout.LayoutParams().apply { width = cellW; setMargins(dp(6), dp(6), dp(6), dp(6)) })
-                    }
-                    contentBox.addView(grid)
-                }
-                else -> {
-                    heroBox.visibility = View.GONE
-                    val saved = all.filter { TvOverlays.inLib(this, it.id) }
-                    addHeader("Your Library & Watchlist")
-                    if (saved.isEmpty()) {
-                        contentBox.addView(TextView(this).apply {
-                            text = "Your Library is empty.\nOpen any movie or show and tap '+ Library'."
-                            setTextColor(0xFFB8BDC8.toInt()); textSize = 15f; gravity = Gravity.CENTER; setPadding(dp(24), dp(40), dp(24), dp(40))
-                        })
-                    } else addMediaRow("Saved Titles", saved)
-                }
+    private fun refreshUi() {
+        when (currentTab) {
+            TabType.FOR_YOU, TabType.MOVIES, TabType.SHOWS -> {
+                heroContainer.visibility = View.VISIBLE; homeSections.visibility = View.VISIBLE; gridContainer.visibility = View.GONE
+                heroList = mediaRepo.heroItems(currentTab)
+                if (heroList.isNotEmpty()) bindHero(heroList[heroIdx.coerceIn(0, heroList.lastIndex)])
+                val (t1, l1) = mediaRepo.row1(currentTab)
+                val (t2, l2) = mediaRepo.row2(currentTab)
+                txtRow1.text = t1; txtRow2.text = t2
+                row1Ad.submitList(l1); appsAd.submitList(appRepo.getHomeRow()); row2Ad.submitList(l2)
             }
-        } catch (e: Throwable) {
-            showErr(e)
+            TabType.APPS -> {
+                heroContainer.visibility = View.GONE; homeSections.visibility = View.GONE; gridContainer.visibility = View.VISIBLE
+                txtGridTitle.text = "Installed Apps (Long-press to Pin)"
+                val list = appRepo.getAllInstalled()
+                rvGrid.layoutManager = GridLayoutManager(this, 5); rvGrid.adapter = gridAppsAd; gridAppsAd.submitList(list)
+                txtEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE; txtEmpty.text = "Loading apps..."
+            }
+            TabType.LIBRARY -> {
+                heroContainer.visibility = View.GONE; homeSections.visibility = View.GONE; gridContainer.visibility = View.VISIBLE
+                txtGridTitle.text = "Your Library & Watchlist"
+                val (_, saved) = mediaRepo.row1(TabType.LIBRARY)
+                rvGrid.layoutManager = GridLayoutManager(this, 4); rvGrid.adapter = gridMediaAd; gridMediaAd.submitList(saved)
+                txtEmpty.visibility = if (saved.isEmpty()) View.VISIBLE else View.GONE
+                txtEmpty.text = "Your Library is empty. Open any title and tap '+ Library'."
+            }
         }
-    }
-
-    private fun addHeader(title: String) {
-        val dp = { v: Int -> TvApps.dp(this, v) }
-        contentBox.addView(TextView(this).apply {
-            text = title; setTextColor(0xFFE8EAED.toInt()); textSize = 14f; setTypeface(null, Typeface.BOLD)
-            setBackgroundColor(0x55000000); setPadding(dp(10), dp(4), dp(10), dp(4))
-        }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(24); topMargin = dp(12); bottomMargin = dp(8) })
-    }
-
-    private fun addMediaRow(title: String, items: List<Media>) {
-        val dp = { v: Int -> TvApps.dp(this, v) }
-        addHeader(title)
-        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(24), dp(4), dp(24), dp(6)) }
-        items.forEach { m ->
-            row.addView(TvCards.makeMediaCard(this, m) { TvOverlays.showDetail(this, it) { renderContent() } },
-                LinearLayout.LayoutParams(dp(178), dp(100)).apply { marginEnd = dp(12) })
-        }
-        hs.addView(row); contentBox.addView(hs)
-    }
-
-    private fun addAppsRow(title: String, apps: List<AppEntry>) {
-        val dp = { v: Int -> TvApps.dp(this, v) }
-        addHeader(title)
-        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(24), dp(4), dp(24), dp(6)) }
-        apps.forEach { a -> row.addView(TvCards.makeAppCircle(this, a, { TvApps.launch(this, it) }, { TvApps.showMenu(this, it) { renderContent() } }), lpWrap(dp(12))) }
-        hs.addView(row); contentBox.addView(hs)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (::searchBox.isInitialized && searchBox.visibility == View.VISIBLE) { searchBox.visibility = View.GONE; return true }
-            if (tab != "For you") { selectTab("For you"); tabBtns["For you"]?.requestFocus(); return true }
+            if (searchOverlay.visibility == View.VISIBLE) { searchOverlay.visibility = View.GONE; return true }
+            if (currentTab != TabType.FOR_YOU) { selectTab(TabType.FOR_YOU); tabs.first().second.requestFocus(); return true }
             val home = packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY)
             if (home?.activityInfo?.packageName == packageName) return true
             if (System.currentTimeMillis() - lastBack < 1800) finish() else {
-                lastBack = System.currentTimeMillis()
-                Toast.makeText(this, "Press Back again to exit", Toast.LENGTH_SHORT).show()
+                lastBack = System.currentTimeMillis(); Toast.makeText(this, "Press Back again to exit", Toast.LENGTH_SHORT).show()
             }
             return true
         }
         return super.onKeyDown(keyCode, event)
-    }
-}
-
-class CrashActivity : Activity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val msg = intent.getStringExtra("err") ?: "Unknown crash"
-        setContentView(ScrollView(this).apply {
-            setBackgroundColor(Color.BLACK)
-            addView(TextView(this@CrashActivity).apply {
-                text = msg; setTextColor(Color.WHITE); textSize = 13f; setPadding(32, 48, 32, 32)
-                setTextIsSelectable(true)
-            })
-        })
     }
 }
