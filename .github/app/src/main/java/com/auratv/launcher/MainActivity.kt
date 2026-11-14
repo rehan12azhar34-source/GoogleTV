@@ -44,6 +44,18 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            initUi()
+        } catch (e: Throwable) {
+            val tv = TextView(this).apply {
+                text = "Aura TV Error:\n${e.stackTraceToString()}"
+                setTextColor(Color.WHITE); setBackgroundColor(Color.BLACK); setPadding(32, 48, 32, 32)
+            }
+            setContentView(ScrollView(this).apply { addView(tv) })
+        }
+    }
+
+    private fun initUi() {
         val dp = { v: Int -> TvApps.dp(this, v) }
         val root = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0B0C10")) }
         heroBg = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
@@ -60,7 +72,6 @@ class MainActivity : Activity() {
         scroll.addView(page)
         root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
 
-        // Top Bar
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(20), dp(14), dp(20), dp(8))
@@ -86,7 +97,6 @@ class MainActivity : Activity() {
         top.addView(TvApps.pillBtn(this, "Aura TV", false) { TvOverlays.showAbout(this) })
         page.addView(top)
 
-        // Hero Section
         heroBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(24), dp(24), dp(12)) }
         heroSrc = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 11f; setTypeface(null, Typeface.BOLD)
@@ -140,7 +150,7 @@ class MainActivity : Activity() {
         TvData.fetchTvMaze { renderContent() }
     }
 
-    override fun onResume() { super.onResume(); h.removeCallbacks(heroTick); h.postDelayed(heroTick, 7000); renderContent() }
+    override fun onResume() { super.onResume(); h.removeCallbacks(heroTick); h.postDelayed(heroTick, 7000); if (::contentBox.isInitialized) renderContent() }
     override fun onPause() { super.onPause(); h.removeCallbacks(heroTick) }
 
     private fun lpWrap(mr: Int = 0, mb: Int = 0) = LinearLayout.LayoutParams(-2, -2).apply { marginEnd = mr; bottomMargin = mb }
@@ -247,7 +257,10 @@ class MainActivity : Activity() {
         addHeader(title)
         val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(24), dp(4), dp(24), dp(6)) }
-        items.forEach { m -> row.addView(TvCards.makeMediaCard(this, m) { TvOverlays.showDetail(this, it) { renderContent() } }, lpWrap(dp(12))) }
+        items.forEach { m ->
+            row.addView(TvCards.makeMediaCard(this, m) { TvOverlays.showDetail(this, it) { renderContent() } },
+                LinearLayout.LayoutParams(dp(178), dp(100)).apply { marginEnd = dp(12) })
+        }
         hs.addView(row); contentBox.addView(hs)
     }
 
@@ -262,7 +275,7 @@ class MainActivity : Activity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (searchBox.visibility == View.VISIBLE) { searchBox.visibility = View.GONE; return true }
+            if (::searchBox.isInitialized && searchBox.visibility == View.VISIBLE) { searchBox.visibility = View.GONE; return true }
             if (tab != "For you") { selectTab("For you"); tabBtns["For you"]?.requestFocus(); return true }
             val home = packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY)
             if (home?.activityInfo?.packageName == packageName) return true
